@@ -33,6 +33,7 @@ TRACK = {"igsh", "igshid", "si", "fbclid", "feature"}
 CACHE: dict[str, Path] = {}     # tugmalar uchun vaqtincha fayllar
 QUERIES: dict[str, str] = {}    # Shazam natijasi -> qidiruv matni
 BUSY: set[int] = set()
+VOICE: dict[str, Path] = {}      # til tanlashni kutayotgan ovozli xabarlar
 
 
 # ---------------- yordamchilar ----------------
@@ -546,24 +547,18 @@ async def identify(msg: Message, src: Path, lang: str):
     await show_shazam(msg, info, lang)
 
 
-async def voice_flow(msg: Message, src: Path, lang: str):
-    """Ovozli xabar: Shazam (qo'shiq eshittirilsa) va nutqni matnga o'girish (nom aytilsa) birga ishlaydi."""
+async def voice_search(msg: Message, src: Path, speech_lang: str, lang: str):
+    """Ovozni foydalanuvchi aytgan tilda matnga o'giradi va qo'shiq qidiradi."""
     status = await msg.answer(t(lang, "music_search"))
-    shz, txt = await asyncio.gather(services.recognize(src), services.transcribe(src, lang), return_exceptions=True)
-    info = shz if isinstance(shz, dict) else None
-    text = txt.strip() if isinstance(txt, str) else ""
-    if isinstance(shz, Exception):
-        log.info("Shazam: %s", str(shz)[:120])
-    if isinstance(txt, Exception):
-        log.info("STT: %s", str(txt)[:120])
-    if info:
-        await status.delete()
-        return await show_shazam(msg, info, lang)
-    if len(text) >= 2:
-        await status.edit_text(t(lang, "voice_heard", q=esc(text[:100])))
-        return await show_search(msg, text, lang)
-    await status.edit_text(t(lang, "voice_none"))
-
+    try:
+        text = await services.transcribe(src, speech_lang)
+    except Exception:
+        log.exception("STT xato")
+        text = ""
+    if len(text) < 2:
+        return await status.edit_text(t(lang, "voice_none"))
+    await status.edit_text(t(lang, "voice_heard", q=esc(text[:100])))
+    await show_search(msg, text, lang)
 
 @router.message(F.video | F.video_note)
 async def on_video(m: Message, bot: Bot, u, lang: str):
@@ -595,16 +590,55 @@ async def on_audio(m: Message, bot: Bot, lang: str):
     media = m.audio or m.voice
     if (media.file_size or 0) > config.MAX_DOWNLOAD_FROM_TG:
         return await m.answer(t(lang, "tg20"))
+    if m.voice and (m.voice.duration or 0) <= 60:
+        # ovozli xabar: avval tilni so'raymiz
+        src = services.tmp(".ogg", "voice")
+        await bot.download(media, destination=src)
+        key = uuid.uuid4().hex[:10]
+        VOICE[key] = src
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🇺🇿 O'zbekcha", callback_data=f"vl:{key}:uz"),
+             InlineKeyboardButton(text="🇷🇺 Русский", callback_data=f"vl:{key}:ru"),
+             InlineKeyboardButton(text="🇬🇧 English", callback_data=f"vl:{key}:en")],
+            [InlineKeyboardButton(text=t(lang, "btn_shazam"), callback_data=f"vl:{key}:sh")],
+        ])
+        return await m.answer(t(lang, "voice_lang"), reply_markup=kb, reply_to_message_id=m.message_id)
+    # oddiy audio fayl: qo'shiqni aniqlaymiz (Shazam)
     async with job(m.from_user.id) as ok:
         if not ok:
             return await m.answer(t(lang, "busy"))
-        src = services.tmp(".ogg" if m.voice else ".bin", "aud")
+        src = services.tmp(".bin", "aud")
         await bot.download(media, destination=src)
         try:
-            if m.voice and (m.voice.duration or 0) <= 60:
-                await voice_flow(m, src, lang)
+            await identify(m, src, lang)
+        finally:
+            src.unlink(missing_ok=True)
+
+
+@router.callback_query(F.data.startswith("vl:"))
+async def voice_lang_chosen(call: CallbackQuery, lang: str):
+    try:
+        _, key, code = call.data.split(":")
+    except ValueError:
+        return await call.answer()
+    src = VOICE.get(key)
+    if not src or not src.exists() or not isinstance(call.message, Message):
+        return await call.answer(t(lang, "file_old"), show_alert=True)
+    async with job(call.from_user.id) as ok:
+        if not ok:
+            return await call.answer(t(lang, "busy"), show_alert=True)
+        await call.answer()
+        VOICE.pop(key, None)
+        msg = call.message
+        try:
+            await msg.delete()
+        except TelegramBadRequest:
+            pass
+        try:
+            if code == "sh":
+                await identify(msg, src, lang)
             else:
-                await identify(m, src, lang)
+                await voice_search(msg, src, code, lang)
         finally:
             src.unlink(missing_ok=True)
 
