@@ -233,3 +233,9 @@ S["en"].update({
 def t(lang: str, key: str, **kw) -> str:
     s = S.get(lang, S["uz"]).get(key) or S["uz"][key]
     return s.format(**kw) if kw else s
+S["uz"]["voice_lang"] = "🌐 Qaysi tilda gapirdingiz?"
+S["ru"]["voice_lang"] = "🌐 На каком языке вы говорили?"
+S["en"]["voice_lang"] = "🌐 Which language did you speak?"
+S["uz"]["btn_shazam"] = "🎶 Qo'shiq eshittirdim"
+S["ru"]["btn_shazam"] = "🎶 Я включил музыку"
+S["en"]["btn_shazam"] = "🎶 I played a song"
