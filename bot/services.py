@@ -390,11 +390,22 @@ async def search(q: str, n: int = 20) -> list[dict]:
 
 
 # ---------------- ovozni matnga o'girish ----------------
-async def _groq(src: Path) -> str:
+STT_PROMPT = {
+    "uz": "Qo'shiq nomi yoki qo'shiqchi ismi.",
+    "ru": "Название песни или имя исполнителя.",
+    "en": "Song title or artist name.",
+}
+GOOGLE_LANG = {"uz": "uz-UZ", "ru": "ru-RU", "en": "en-US"}
+
+
+async def _groq(src: Path, lang: str) -> str:
     import aiohttp
     form = aiohttp.FormData()
     form.add_field("file", src.read_bytes(), filename="voice.ogg", content_type="audio/ogg")
-    form.add_field("model", "whisper-large-v3-turbo")
+    form.add_field("model", "whisper-large-v3")
+    form.add_field("language", lang)
+    if STT_PROMPT.get(lang):
+        form.add_field("prompt", STT_PROMPT[lang])
     form.add_field("response_format", "json")
     form.add_field("temperature", "0")
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as s:
@@ -414,33 +425,31 @@ def _google_stt(wav: Path, lang: str) -> str:
     rec = sr.Recognizer()
     with sr.AudioFile(str(wav)) as s:
         audio = rec.record(s)
-    order = {"uz": ["uz-UZ", "ru-RU", "en-US"], "ru": ["ru-RU", "uz-UZ", "en-US"]}.get(lang, ["en-US", "ru-RU", "uz-UZ"])
-    for code in order:
-        try:
-            return rec.recognize_google(audio, language=code).strip()
-        except sr.UnknownValueError:
-            continue
-        except Exception as e:
-            log.warning("Google STT xato: %s", str(e)[:150])
-            return ""
-    return ""
+    try:
+        return rec.recognize_google(audio, language=GOOGLE_LANG.get(lang, "en-US")).strip()
+    except sr.UnknownValueError:
+        return ""
+    except Exception as e:
+        log.warning("Google STT xato: %s", str(e)[:150])
+        return ""
 
 
 async def transcribe(src: Path, lang: str) -> str:
+    """lang: foydalanuvchi aytgan til ('uz' | 'ru' | 'en')."""
+    text = ""
     if config.GROQ_API_KEY:
         try:
-            text = await _groq(src)
-            if text:
-                return text
+            text = await _groq(src, lang)
         except Exception as e:
             log.warning("Groq istisno: %s", str(e)[:150])
-    wav = tmp(".wav", "stt")
-    try:
-        if not await ffmpeg("-i", str(src), "-ac", "1", "-ar", "16000", str(wav), timeout=60):
-            return ""
-        return await asyncio.to_thread(_google_stt, wav, lang)
-    finally:
-        wav.unlink(missing_ok=True)
+    if not text:
+        wav = tmp(".wav", "stt")
+        try:
+            if await ffmpeg("-i", str(src), "-ac", "1", "-ar", "16000", str(wav), timeout=60):
+                text = await asyncio.to_thread(_google_stt, wav, lang)
+        finally:
+            wav.unlink(missing_ok=True)
+    return text.strip(" .,!?;:…\"'«»-\n")
 
 
 async def make_gif(src: Path) -> Path | None:
