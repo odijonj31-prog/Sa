@@ -32,3 +32,6 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY") or None    # ixtiyoriy: ovozni matnga o
 COOKIES_B64 = os.getenv("COOKIES_B64") or None      # ixtiyoriy: cookies.txt base64 ko'rinishida
 FFMPEG_JOBS = int(os.getenv("FFMPEG_JOBS", "3"))
 RESOLVE_JOBS = int(os.getenv("RESOLVE_JOBS", "16"))
+
+PREFETCH = int(os.getenv("PREFETCH", "2"))
+SEARCH_HEDGE = float(os.getenv("SEARCH_HEDGE", "3"))
